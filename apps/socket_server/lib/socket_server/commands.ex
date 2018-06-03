@@ -1,6 +1,6 @@
 defmodule SocketServer.Commands do
   @moduledoc false
-  
+
   def from_request(request) do
     request
     |> :erlang.binary_to_list()

@@ -3,11 +3,29 @@ defmodule SocketServer.StreamServer do
 
   alias SocketServer.StreamSupervisor
   alias SocketServer.Commands
+  alias SocketServer.Utils
+  alias Bolt.Sips
+  alias Repository.Repo
 
   use GenServer
-  use SocketServer.Player
 
-  defstruct socket: nil, uid: nil, port: nil, history: [], next_song: nil
+  @chunksize 24_576
+  @queue_size 10
+  @history_size 10
+  @base_dir "../data/"
+
+  defstruct socket: nil,
+            uid: nil,
+            port: nil,
+            repo_conn: nil,
+            history: [],
+            queue: [],
+            buffer: <<>>,
+            source: nil,
+            header: nil,
+            offset: nil,
+            stop: nil,
+            preferences: %{genre: "Downtempo"}
 
   def start_link(socket), do: GenServer.start_link(__MODULE__, socket)
 
@@ -17,42 +35,98 @@ defmodule SocketServer.StreamServer do
   end
 
   def handle_cast(:accept, %__MODULE__{socket: listen_socket}) do
+    repo_conn = Sips.conn()
     {:ok, accept_socket} = :gen_tcp.accept(listen_socket)
-    IO.puts("StreamServer: new conn")
     StreamSupervisor.start_child()
-    {:noreply, %__MODULE__{socket: accept_socket}}
+
+    {:noreply, %__MODULE__{socket: accept_socket, repo_conn: repo_conn}}
   end
 
-  def handle_info({:tcp, _port, request}, state = %__MODULE__{socket: accept_socket}) do
+  def handle_info(
+        {:tcp, _port, request},
+        state = %__MODULE__{socket: accept_socket, repo_conn: repo_conn, preferences: preferences}
+      ) do
     commands = Commands.from_request(request)
-    IO.inspect(commands)
 
     uid = Commands.uid(commands)
-    IO.inspect(uid)
-
     port = Commands.port(commands)
-    IO.inspect(port)
 
-    :gen_tcp.send(accept_socket, [init_response()])
+    queue = Repo.songs_from_preferences(repo_conn, preferences)
 
-    play_songs(accept_socket, <<>>)
+    :gen_tcp.send(accept_socket, [Utils.init_response()])
 
-    {:noreply, %{state | uid: uid, port: port}}
+    GenServer.cast(self(), :play_songs)
+
+    {:noreply, %{state | uid: uid, port: port, queue: queue}}
   end
 
-  defp init_response do
-    [
-      'ICY 200 OK\r\n',
-      'icy-notice1: <BR>This stream requires',
-      '<a href=\"http://www.winamp.com/\">Winamp</a><BR>\r\n',
-      'icy-notice2: Elixir Shoutcast server<BR>\r\n',
-      'icy-name: Erradio radio\r\n',
-      'icy-genre: hard\r\n',
-      'icy-url: http://localhost:3131/stepnivlk\r\n',
-      'content-type: audio/mpeg\r\n',
-      'icy-pub: 1\r\n',
-      'icy-metaint: #{@chunksize}\r\n',
-      'icy-br: 96\r\n\r\n'
-    ]
+  def handle_cast(:pop_song, state = %__MODULE__{queue: [song | rest], history: history}) do
+    {:noreply, %{state | queue: rest, history: [song | rest]}}
+  end
+
+  def handle_cast(
+        :play_songs,
+        state = %__MODULE__{source: source, socket: socket, queue: [song | rest], buffer: buffer}
+      ) do
+    File.close(source)
+    GenServer.cast(self(), :pop_song)
+    IO.inspect(state)
+
+    path = "#{@base_dir}/#{song.path}"
+    {start, stop} = FileServer.Mp3Cues.find(path)
+    header = Utils.make_header(song)
+
+    {:ok, new_source} = File.open(path, [:read, :binary, :raw])
+    GenServer.cast(self(), :send_file)
+
+    {:noreply, %{state | source: new_source, header: header, offset: start, stop: stop}}
+  end
+
+  def handle_cast(
+        :send_file,
+        state = %__MODULE__{
+          socket: socket,
+          source: source,
+          buffer: buffer,
+          header: header,
+          offset: offset,
+          stop: stop
+        }
+      ) do
+    need = @chunksize - byte_size(buffer)
+    last = offset + need
+
+    IO.inspect("send_file #{inspect(offset)} #{inspect(need)}")
+
+    if last >= stop do
+      max = stop - offset
+      {:ok, bin} = :file.pread(source, offset, max)
+
+      new_buffer = :erlang.list_to_binary([buffer, bin])
+
+      GenServer.cast(self(), :play_songs)
+
+      {:noreply, %{state | buffer: new_buffer}}
+    else
+      {:ok, bin} = :file.pread(source, offset, need)
+      write_data(socket, buffer, bin, header)
+
+      GenServer.cast(self(), :send_file)
+
+      {:noreply, %{state | offset: offset + need, buffer: <<>>}}
+    end
+  end
+
+  defp write_data(socket, buffer, bin, header) do
+    case byte_size(buffer) + byte_size(bin) do
+      @chunksize ->
+        case :gen_tcp.send(socket, [buffer, bin, header]) do
+          :ok -> true
+          {:error, :closed} -> exit(:player_closed)
+        end
+
+      _other ->
+        exit(:error) # TODO: handle properly
+    end
   end
 end

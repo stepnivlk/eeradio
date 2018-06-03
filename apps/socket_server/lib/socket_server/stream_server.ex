@@ -32,7 +32,7 @@ defmodule SocketServer.StreamServer do
             offset: nil,
             # Where data ends in a song
             stop: nil,
-            preferences: %{genre: "Downtempo"}
+            preferences: %{genre: "Downtempo", user_uid: "stepnivlk"}
 
   def start_link(socket), do: GenServer.start_link(__MODULE__, socket)
 

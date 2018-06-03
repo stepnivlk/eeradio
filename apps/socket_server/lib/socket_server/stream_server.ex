@@ -20,12 +20,18 @@ defmodule SocketServer.StreamServer do
             repo_conn: nil,
             current_song: nil,
             history: [],
-            queue: [], # Upcoming songs
-            buffer: <<>>, # Used when transitioning between songs
-            source: nil, # Opened file
-            header: nil, # To be sent to a client
-            offset: nil, # Current offset in a song
-            stop: nil, # Where data ends in a song
+            # Upcoming songs
+            queue: [],
+            # Used when transitioning between songs
+            buffer: <<>>,
+            # Opened file
+            source: nil,
+            # To be sent to a client
+            header: nil,
+            # Current offset in a song
+            offset: nil,
+            # Where data ends in a song
+            stop: nil,
             preferences: %{genre: "Downtempo"}
 
   def start_link(socket), do: GenServer.start_link(__MODULE__, socket)
@@ -59,6 +65,16 @@ defmodule SocketServer.StreamServer do
     StreamSupervisor.start_child()
 
     {:noreply, %__MODULE__{socket: accept_socket, repo_conn: repo_conn}}
+  end
+
+  def handle_cast(
+        {:mark_song, current_song},
+        state = %__MODULE__{uid: uid, repo_conn: repo_conn}
+      ) do
+
+    Repo.mark_song_for_user(repo_conn, current_song, uid)
+
+    {:noreply, state}
   end
 
   def handle_cast(
@@ -97,6 +113,7 @@ defmodule SocketServer.StreamServer do
   def handle_cast(
         :send_file,
         state = %__MODULE__{
+          current_song: current_song,
           socket: socket,
           source: source,
           buffer: buffer,
@@ -114,6 +131,7 @@ defmodule SocketServer.StreamServer do
 
       new_buffer = :erlang.list_to_binary([buffer, bin])
 
+      GenServer.cast(self(), {:mark_song, current_song})
       GenServer.cast(self(), :play_songs)
 
       {:noreply, %{state | buffer: new_buffer}}

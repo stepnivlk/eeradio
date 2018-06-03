@@ -13,6 +13,15 @@ defmodule Repository.Repo do
     |> Enum.map(&with_path/1)
   end
 
+  def mark_song_for_user(conn, %{song: song}, uid) do
+    conn
+    |> Sips.query("""
+    MATCH (song:Song {name: '#{song}'})
+    MATCH (user:User {uid: '#{uid}'})
+    CREATE (user)-[:HEARD]->(song)
+    """)
+  end
+
   defp with_path(%{
          "author.name" => author,
          "album.name" => album,

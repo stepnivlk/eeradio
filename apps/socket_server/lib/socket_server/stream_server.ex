@@ -18,13 +18,14 @@ defmodule SocketServer.StreamServer do
             uid: nil,
             port: nil,
             repo_conn: nil,
+            current_song: nil,
             history: [],
-            queue: [],
-            buffer: <<>>,
-            source: nil,
-            header: nil,
-            offset: nil,
-            stop: nil,
+            queue: [], # Upcoming songs
+            buffer: <<>>, # Used when transitioning between songs
+            source: nil, # Opened file
+            header: nil, # To be sent to a client
+            offset: nil, # Current offset in a song
+            stop: nil, # Where data ends in a song
             preferences: %{genre: "Downtempo"}
 
   def start_link(socket), do: GenServer.start_link(__MODULE__, socket)
@@ -32,14 +33,6 @@ defmodule SocketServer.StreamServer do
   def init(socket) do
     GenServer.cast(self(), :accept)
     {:ok, %__MODULE__{socket: socket}}
-  end
-
-  def handle_cast(:accept, %__MODULE__{socket: listen_socket}) do
-    repo_conn = Sips.conn()
-    {:ok, accept_socket} = :gen_tcp.accept(listen_socket)
-    StreamSupervisor.start_child()
-
-    {:noreply, %__MODULE__{socket: accept_socket, repo_conn: repo_conn}}
   end
 
   def handle_info(
@@ -51,7 +44,7 @@ defmodule SocketServer.StreamServer do
     uid = Commands.uid(commands)
     port = Commands.port(commands)
 
-    queue = Repo.songs_from_preferences(repo_conn, preferences)
+    queue = songs_from_preferences(repo_conn, preferences, [])
 
     :gen_tcp.send(accept_socket, [Utils.init_response()])
 
@@ -60,26 +53,45 @@ defmodule SocketServer.StreamServer do
     {:noreply, %{state | uid: uid, port: port, queue: queue}}
   end
 
-  def handle_cast(:pop_song, state = %__MODULE__{queue: [song | rest], history: history}) do
-    {:noreply, %{state | queue: rest, history: [song | rest]}}
+  def handle_cast(:accept, %__MODULE__{socket: listen_socket}) do
+    repo_conn = Sips.conn()
+    {:ok, accept_socket} = :gen_tcp.accept(listen_socket)
+    StreamSupervisor.start_child()
+
+    {:noreply, %__MODULE__{socket: accept_socket, repo_conn: repo_conn}}
   end
 
   def handle_cast(
         :play_songs,
-        state = %__MODULE__{source: source, socket: socket, queue: [song | rest], buffer: buffer}
+        state = %__MODULE__{
+          source: source,
+          queue: [song | rest],
+          history: history,
+          repo_conn: repo_conn,
+          preferences: preferences
+        }
       ) do
     File.close(source)
-    GenServer.cast(self(), :pop_song)
-    IO.inspect(state)
 
     path = "#{@base_dir}/#{song.path}"
     {start, stop} = FileServer.Mp3Cues.find(path)
     header = Utils.make_header(song)
-
     {:ok, new_source} = File.open(path, [:read, :binary, :raw])
+    new_queue = songs_from_preferences(repo_conn, preferences, rest)
+
     GenServer.cast(self(), :send_file)
 
-    {:noreply, %{state | source: new_source, header: header, offset: start, stop: stop}}
+    {:noreply,
+     %{
+       state
+       | source: new_source,
+         header: header,
+         offset: start,
+         stop: stop,
+         current_song: song,
+         queue: new_queue,
+         history: [song | history]
+     }}
   end
 
   def handle_cast(
@@ -95,8 +107,6 @@ defmodule SocketServer.StreamServer do
       ) do
     need = @chunksize - byte_size(buffer)
     last = offset + need
-
-    IO.inspect("send_file #{inspect(offset)} #{inspect(need)}")
 
     if last >= stop do
       max = stop - offset
@@ -126,7 +136,14 @@ defmodule SocketServer.StreamServer do
         end
 
       _other ->
-        exit(:error) # TODO: handle properly
+        # TODO: handle properly
+        exit(:error)
     end
   end
+
+  defp songs_from_preferences(repo_conn, preferences, []) do
+    Repo.songs_from_preferences(repo_conn, preferences)
+  end
+
+  defp songs_from_preferences(_repo_conn, _preferences, queue), do: queue
 end

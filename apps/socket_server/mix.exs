@@ -17,13 +17,14 @@ defmodule SocketServer.MixProject do
 
   def application do
     [
-      extra_applications: [:logger],
+      extra_applications: [:logger, :ibrowse],
       mod: {SocketServer.Application, []}
     ]
   end
 
   defp deps do
     [
+      {:ibrowse, "~> 4.4"},
       {:credo, "~> 0.9", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 0.5", only: [:dev], runtime: false},
       {:ex_doc, "~> 0.18", only: [:dev], runtime: false}

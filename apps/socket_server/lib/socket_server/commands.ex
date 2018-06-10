@@ -1,11 +1,20 @@
 defmodule SocketServer.Commands do
   @moduledoc false
 
+  defstruct [:uid, :port]
+
   def from_request(request) do
     request
     |> :erlang.binary_to_list()
     |> :string.tokens('\r\n')
     |> Enum.map(fn command -> :string.tokens(command, ' ') end)
+  end
+
+  def to_struct(commands) do
+    uid = uid(commands)
+    port = port(commands)
+
+    %__MODULE__{uid: uid, port: port}
   end
 
   def uid([['GET', uid, _] | _tail]) do

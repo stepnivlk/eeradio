@@ -4,6 +4,7 @@ defmodule SocketServer.StreamServer do
   alias SocketServer.StreamSupervisor
   alias SocketServer.Commands
   alias SocketServer.Utils
+  alias SocketServer.Buffer
   alias Bolt.Sips
   alias Repository.Repo
 
@@ -32,7 +33,9 @@ defmodule SocketServer.StreamServer do
             offset: nil,
             # Where data ends in a song
             stop: nil,
-            preferences: %{genre: "Downtempo", user_uid: "stepnivlk"}
+            commands: %Commands{},
+            preferences: %{genre: "Hardtekno", user_uid: "stepnivlk"},
+            buffer_pid: nil
 
   def start_link(socket), do: GenServer.start_link(__MODULE__, socket)
 
@@ -45,10 +48,9 @@ defmodule SocketServer.StreamServer do
         {:tcp, _port, request},
         state = %__MODULE__{socket: accept_socket, repo_conn: repo_conn, preferences: preferences}
       ) do
-    commands = Commands.from_request(request)
+    commands = request |> Commands.from_request() |> Commands.to_struct()
 
-    uid = Commands.uid(commands)
-    port = Commands.port(commands)
+    {:ok, buffer_pid} = Buffer.start_link(commands)
 
     queue = songs_from_preferences(repo_conn, preferences, [])
 
@@ -56,7 +58,7 @@ defmodule SocketServer.StreamServer do
 
     GenServer.cast(self(), :play_songs)
 
-    {:noreply, %{state | uid: uid, port: port, queue: queue}}
+    {:noreply, %{state | commands: commands, queue: queue}}
   end
 
   def handle_cast(:accept, %__MODULE__{socket: listen_socket}) do
@@ -71,7 +73,6 @@ defmodule SocketServer.StreamServer do
         {:mark_song, current_song},
         state = %__MODULE__{uid: uid, repo_conn: repo_conn}
       ) do
-
     Repo.mark_song_for_user(repo_conn, current_song, uid)
 
     {:noreply, state}

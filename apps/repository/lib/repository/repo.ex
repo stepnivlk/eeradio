@@ -4,11 +4,12 @@ defmodule Repository.Repo do
   def songs_from_preferences(conn, %{genre: genre, user_uid: user_uid}, length \\ 10) do
     conn
     |> Sips.query!("""
-    MATCH (song:Song)-[:IN_ALBUM]->(album)-[:IN_GENRE]->(g:Genre {name: '#{genre}'})
+    MATCH (song:Song)-[:IN_GENRE]->(:Genre {name: '#{genre}'})
+    MATCH (song)-[:IN_ALBUM]->(album)
     MATCH (author)-[:AUTHORS]->(album)
     MATCH (user:User {uid: '#{user_uid}'})
     OPTIONAL MATCH (user)-[heard:HEARD]->(song)
-    RETURN song.name, song.order, album.name, author.name
+    RETURN song.name, song.url, album.name, author.name
     ORDER BY -heard.times DESC
     LIMIT #{length}
     """)
@@ -30,16 +31,13 @@ defmodule Repository.Repo do
          "author.name" => author,
          "album.name" => album,
          "song.name" => song,
-         "song.order" => order
+         "song.url" => url
        }) do
-    album_path = "#{author} - #{album}"
-    song_path = "#{order} - #{song}"
-
     %{
       author: author,
       album: album,
       song: song,
-      path: "mp3/#{to_md5(album_path)}/#{to_md5(song_path)}.mp3"
+      url: url
     }
   end
 

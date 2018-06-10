@@ -7,6 +7,8 @@ defmodule SocketServer.Buffer do
   alias Repository.Repo
   alias Bolt.Sips
 
+  @chunksize 24_576
+
   defstruct commands: %Commands{},
             queue: [],
             buffer: <<>>,
@@ -43,22 +45,31 @@ defmodule SocketServer.Buffer do
 
   # First data frame after the headers.
   # Found ID3v2. 73, 68, 51 are codepoints of I, D and 3 characters.
-  def handle_info({:ibrowse_async_response, id, raw_bin = [73, 68, 51 | _]}, state) do
+  def handle_info({:ibrowse_async_response, id, raw_bin = [73, 68, 51 | _]}, state = %__MODULE__{buffer: buffer}) do
     bin = :erlang.list_to_binary(raw_bin)
 
     <<header::bytes-size(10), _::binary>> = bin
 
     id3_size = id3_size_from_header(header)
 
-    <<_id3::bytes-size(id3_size), mp3_data::binary>> = bin
-    IO.inspect(mp3_data)
+    <<_id3::bytes-size(id3_size), ext_header::bytes-size(10), mp3_data::binary>> = bin
 
-    {:noreply, state}
+    :ibrowse.stream_next(id)
+
+    {:noreply, %{state | buffer: buffer <> mp3_data}}
   end
 
-  def handle_info({:ibrowse_async_response, id, frame}, state) do
-    IO.inspect(frame)
-    {:noreply, state}
+  def handle_info({:ibrowse_async_response, id, raw_bin}, state = %__MODULE__{buffer: buffer}) do
+    bin = :erlang.list_to_binary(raw_bin)
+
+    buffer_size = byte_size(buffer)
+    IO.inspect(buffer_size)
+
+    if buffer_size <= (@chunksize * 4) do
+      :ibrowse.stream_next(id)
+    end
+
+    {:noreply, %{state | buffer: buffer <> bin}}
   end
 
   defp open_socket(%{url: url}) do
@@ -68,7 +79,7 @@ defmodule SocketServer.Buffer do
         [],
         :get,
         [],
-        [{:stream_to, {self(), :once}}],
+        [{:stream_to, {self(), :once}}, {:stream_chunk_size, 4000}],
         :infinity
       )
 

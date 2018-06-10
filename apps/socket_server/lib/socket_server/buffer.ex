@@ -45,7 +45,10 @@ defmodule SocketServer.Buffer do
 
   # First data frame after the headers.
   # Found ID3v2. 73, 68, 51 are codepoints of I, D and 3 characters.
-  def handle_info({:ibrowse_async_response, id, raw_bin = [73, 68, 51 | _]}, state = %__MODULE__{buffer: buffer}) do
+  def handle_info(
+        {:ibrowse_async_response, id, raw_bin = [73, 68, 51 | _]},
+        state = %__MODULE__{buffer: buffer}
+      ) do
     bin = :erlang.list_to_binary(raw_bin)
 
     <<header::bytes-size(10), _::binary>> = bin
@@ -65,7 +68,7 @@ defmodule SocketServer.Buffer do
     buffer_size = byte_size(buffer)
     IO.inspect(buffer_size)
 
-    if buffer_size <= (@chunksize * 4) do
+    if buffer_size <= @chunksize * 4 do
       :ibrowse.stream_next(id)
     end
 

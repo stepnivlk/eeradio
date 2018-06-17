@@ -1,13 +1,13 @@
 defmodule Repository.Repo do
   alias Bolt.Sips
 
-  def songs_from_commands(conn, %{genre: genre, user_uid: user_uid}, length \\ 10) do
+  def songs_from_commands(conn, %{genre: genre, uid: uid}, length \\ 10) do
     conn
     |> Sips.query!("""
     MATCH (song:Song)-[:IN_GENRE]->(:Genre {name: '#{genre}'})
     MATCH (song)-[:IN_ALBUM]->(album)
     MATCH (author)-[:AUTHORS]->(album)
-    MATCH (user:User {uid: '#{user_uid}'})
+    MATCH (user:User {uid: '#{uid}'})
     OPTIONAL MATCH (user)-[heard:HEARD]->(song)
     RETURN song.name, song.url, album.name, author.name
     ORDER BY -heard.times DESC

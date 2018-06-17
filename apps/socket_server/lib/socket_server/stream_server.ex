@@ -21,7 +21,15 @@ defmodule SocketServer.StreamServer do
             commands: %Commands{},
             buffer_pid: nil
 
+  ## ==========================================================================
+  ## CLIENT
+  ## ==========================================================================
+
   def start_link(socket), do: GenServer.start_link(__MODULE__, socket)
+
+  ## ==========================================================================
+  ## SERVER
+  ## ==========================================================================
 
   def init(socket) do
     GenServer.cast(self(), :accept)
@@ -52,7 +60,6 @@ defmodule SocketServer.StreamServer do
     {:ok, accept_socket} = :gen_tcp.accept(listen_socket)
     StreamSupervisor.start_child()
 
-    # {:noreply, %{state | socket: accept_socket, repo_conn: repo_conn, buffer_pid: buffer_pid}}
     {:noreply, %{state | socket: accept_socket, repo_conn: repo_conn }}
   end
 
@@ -77,21 +84,4 @@ defmodule SocketServer.StreamServer do
       {:error, :closed} -> exit(:player_closed)
     end
   end
-
-  # useless
-
-  def handle_cast(
-        {:mark_song, current_song},
-        state = %{uid: uid, repo_conn: repo_conn}
-      ) do
-    Repo.mark_song_for_user(repo_conn, current_song, uid)
-
-    {:noreply, state}
-  end
-
-  defp songs_from_preferences(repo_conn, preferences, []) do
-    Repo.songs_from_preferences(repo_conn, preferences)
-  end
-
-  defp songs_from_preferences(_repo_conn, _preferences, queue), do: queue
 end

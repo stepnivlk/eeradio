@@ -9,6 +9,7 @@ defmodule SocketServer.Buffer do
 
   @chunk_size 24_576
   @buffer_size @chunk_size * 100
+  @queue_limit_length 0
 
   defstruct commands: %Commands{},
             queue: [],
@@ -19,7 +20,7 @@ defmodule SocketServer.Buffer do
             parent_pid: nil
 
   ## ==========================================================================
-  ## Client
+  ## CLIENT
   ## ==========================================================================
 
   def start_link(commands), do: GenServer.start_link(__MODULE__, commands)
@@ -33,7 +34,7 @@ defmodule SocketServer.Buffer do
   end
 
   ## ==========================================================================
-  ## Server
+  ## SERVER
   ## ==========================================================================
 
   def init(commands) do
@@ -41,6 +42,10 @@ defmodule SocketServer.Buffer do
     GenServer.cast(self(), :init_buffer)
     {:ok, %__MODULE__{commands: commands, repo_conn: repo_conn}}
   end
+
+  ## ==========================================================================
+  ## Local handlers
+  ## ==========================================================================
 
   def handle_call(
         :request_chunk,
@@ -69,6 +74,11 @@ defmodule SocketServer.Buffer do
     stream_id = open_stream(current_song)
 
     {:noreply, %{state | queue: queue, current_song: current_song, stream_id: stream_id}}
+  end
+
+  # TODO
+  def handle_cast(:reset_for_commands, state) do
+    {:noreply, state}
   end
 
   ## ==========================================================================
@@ -113,6 +123,14 @@ defmodule SocketServer.Buffer do
     end
 
     {:noreply, %{state | buffer: buffer <> bin}}
+  end
+
+  def handle_info({:ibrowse_async_response_end, id}, state = %{queue: [next_song | rest], buffer: buffer}) do
+    :ibrowse.stream_close(id)
+
+    open_stream(next_song)
+
+    {:noreply, state}
   end
 
   ## ==========================================================================

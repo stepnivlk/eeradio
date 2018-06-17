@@ -27,7 +27,7 @@ defmodule SocketServer.StreamSupervisor do
     DynamicSupervisor.start_child(__MODULE__, stream_server_spec)
   end
 
-  defp empty_listeners, do: for(_ <- 1..10, do: start_child())
+  defp empty_listeners, do: for(_ <- 1..2, do: start_child())
 
   defp start_listen do
     :gen_tcp.listen(@port, [:binary, {:packet, 0}, {:reuseaddr, true}, {:active, :once}])

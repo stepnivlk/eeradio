@@ -10,31 +10,15 @@ defmodule SocketServer.StreamServer do
 
   use GenServer
 
-  @chunksize 24_576
   @queue_size 10
   @history_size 10
-  @base_dir "../data/"
 
   defstruct socket: nil,
-            uid: nil,
-            port: nil,
             repo_conn: nil,
             current_song: nil,
             history: [],
-            # Upcoming songs
             queue: [],
-            # Used when transitioning between songs
-            buffer: <<>>,
-            # Opened file
-            source: nil,
-            # To be sent to a client
-            header: nil,
-            # Current offset in a song
-            offset: nil,
-            # Where data ends in a song
-            stop: nil,
             commands: %Commands{},
-            preferences: %{genre: "Hardtekno", user_uid: "stepnivlk"},
             buffer_pid: nil
 
   def start_link(socket), do: GenServer.start_link(__MODULE__, socket)
@@ -44,120 +28,65 @@ defmodule SocketServer.StreamServer do
     {:ok, %__MODULE__{socket: socket}}
   end
 
+  # Incoming stream request from client
   def handle_info(
         {:tcp, _port, request},
-        state = %__MODULE__{socket: accept_socket, repo_conn: repo_conn, preferences: preferences}
+        state = %{socket: accept_socket, repo_conn: repo_conn}
       ) do
-    commands = request |> Commands.from_request() |> Commands.to_struct()
-
+    commands = request |> Commands.from_request()
     {:ok, buffer_pid} = Buffer.start_link(commands)
-
-    queue = songs_from_preferences(repo_conn, preferences, [])
 
     :gen_tcp.send(accept_socket, [Utils.init_response()])
 
     GenServer.cast(self(), :play_songs)
-
-    {:noreply, %{state | commands: commands, queue: queue}}
+    {:noreply, %{state | commands: commands, buffer_pid: buffer_pid}}
   end
 
-  def handle_cast(:accept, %__MODULE__{socket: listen_socket}) do
+  @doc ~S"""
+  Called from the init
+  Waits for client conn, when appeares starts buffer
+  """
+  def handle_cast(:accept, state = %{socket: listen_socket, commands: commands}) do
     repo_conn = Sips.conn()
+
     {:ok, accept_socket} = :gen_tcp.accept(listen_socket)
     StreamSupervisor.start_child()
 
-    {:noreply, %__MODULE__{socket: accept_socket, repo_conn: repo_conn}}
+    # {:noreply, %{state | socket: accept_socket, repo_conn: repo_conn, buffer_pid: buffer_pid}}
+    {:noreply, %{state | socket: accept_socket, repo_conn: repo_conn }}
   end
 
-  def handle_cast(
-        {:mark_song, current_song},
-        state = %__MODULE__{uid: uid, repo_conn: repo_conn}
-      ) do
-    Repo.mark_song_for_user(repo_conn, current_song, uid)
+  def handle_cast(:play_songs, state = %{socket: socket, buffer_pid: buffer_pid}) do
+    case Buffer.request_chunk(buffer_pid) do
+      {:ok, chunk, song} ->
+        deliver_chunk(chunk, song, socket)
+      _ ->
+        :noop
+    end
+
+    GenServer.cast(self(), :play_songs)
 
     {:noreply, state}
   end
 
-  def handle_cast(
-        :play_songs,
-        state = %__MODULE__{
-          source: source,
-          queue: [song | rest],
-          history: history,
-          repo_conn: repo_conn,
-          preferences: preferences
-        }
-      ) do
-    File.close(source)
-
-    path = "#{@base_dir}/#{song.path}"
-    {start, stop} = FileServer.Mp3Cues.find(path)
+  defp deliver_chunk(chunk, song, socket) do
     header = Utils.make_header(song)
-    {:ok, new_source} = File.open(path, [:read, :binary, :raw])
-    new_queue = songs_from_preferences(repo_conn, preferences, rest)
 
-    GenServer.cast(self(), :send_file)
-
-    {:noreply,
-     %{
-       state
-       | source: new_source,
-         header: header,
-         offset: start,
-         stop: stop,
-         current_song: song,
-         queue: new_queue,
-         history: [song | history]
-     }}
+    case :gen_tcp.send(socket, [chunk, header]) do
+      :ok -> true
+      {:error, :closed} -> exit(:player_closed)
+    end
   end
+
+  # useless
 
   def handle_cast(
-        :send_file,
-        state = %__MODULE__{
-          current_song: current_song,
-          socket: socket,
-          source: source,
-          buffer: buffer,
-          header: header,
-          offset: offset,
-          stop: stop
-        }
+        {:mark_song, current_song},
+        state = %{uid: uid, repo_conn: repo_conn}
       ) do
-    need = @chunksize - byte_size(buffer)
-    last = offset + need
+    Repo.mark_song_for_user(repo_conn, current_song, uid)
 
-    if last >= stop do
-      max = stop - offset
-      {:ok, bin} = :file.pread(source, offset, max)
-
-      new_buffer = :erlang.list_to_binary([buffer, bin])
-
-      GenServer.cast(self(), {:mark_song, current_song})
-      GenServer.cast(self(), :play_songs)
-
-      {:noreply, %{state | buffer: new_buffer}}
-    else
-      {:ok, bin} = :file.pread(source, offset, need)
-      write_data(socket, buffer, bin, header)
-
-      GenServer.cast(self(), :send_file)
-
-      {:noreply, %{state | offset: offset + need, buffer: <<>>}}
-    end
-  end
-
-  defp write_data(socket, buffer, bin, header) do
-    case byte_size(buffer) + byte_size(bin) do
-      @chunksize ->
-        case :gen_tcp.send(socket, [buffer, bin, header]) do
-          :ok -> true
-          {:error, :closed} -> exit(:player_closed)
-        end
-
-      _other ->
-        # TODO: handle properly
-        exit(:error)
-    end
+    {:noreply, state}
   end
 
   defp songs_from_preferences(repo_conn, preferences, []) do
